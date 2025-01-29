@@ -1,45 +1,24 @@
 
-import { ethers } from 'ethers'
-import fs from 'fs/promises'
 import readline from 'readline'
 import log from './utils/logger.js'
 import LayerEdge from './utils/socket.js';
 import { readFile } from './utils/helper.js';
+import WalletManager from './utils/wallet.js';
 
-function createNewWallet() {
-    const wallet = ethers.Wallet.createRandom();
-
-    const walletDetails = {
-        address: wallet.address,
-        privateKey: wallet.privateKey,
-        mnemonic: wallet.mnemonic.phrase
-    };
-
-    log.info("New Ethereum Wallet created Address:", walletDetails.address);
-
-    return walletDetails;
-}
-
-
-async function saveWalletToFile(walletDetails) {
-    let wallets = [];
-    try {
-        if (await fs.stat("wallets.json").catch(() => false)) {
-            const data = await fs.readFile("wallets.json", "utf8");
-            wallets = JSON.parse(data);
+async function handleWalletCreation(privateKey = null) {
+    let walletDetails;
+    if (privateKey) {
+        walletDetails = WalletManager.createFromPrivateKey(privateKey);
+        if (!walletDetails) {
+            log.error('无效的私钥');
+            return null;
         }
-    } catch (err) {
-        log.error("Error reading wallets.json:", err);
+        log.info('已从私钥导入钱包，地址:', walletDetails.address);
+    } else {
+        walletDetails = WalletManager.createNewWallet();
+        log.info('已创建新的以太坊钱包，地址:', walletDetails.address);
     }
-
-    wallets.push(walletDetails);
-
-    try {
-        await fs.writeFile("wallets.json", JSON.stringify(wallets, null, 2));
-        log.info("Wallet saved to wallets.json");
-    } catch (err) {
-        log.error("Error writing to wallets.json:", err);
-    }
+    return walletDetails;
 }
 
 // Function to ask a question 
@@ -60,25 +39,34 @@ async function askQuestion(question) {
 async function autoRegister() {
     const proxies = await readFile('proxy.txt');
     if (proxies.length === 0) {
-        log.warn('No proxies found, running without proxy...');
+        log.warn('未找到代理，将不使用代理运行...');
     }
-    const numberOfWallets = await askQuestion("How many wallets/ref do you want to create? ");
-    const refCode = await askQuestion("Enter Your Referral code example => O8Ijyqih: ");
+    
+    const mode = await askQuestion("请选择操作模式 (1: 创建新钱包, 2: 导入已有钱包): ");
+    const numberOfWallets = mode === '1' ? await askQuestion("请输入要创建的钱包数量: ") : 1;
+    const refCode = await askQuestion("请输入您的推荐码，例如 => O8Ijyqih: ");
+    
+    let privateKey = null;
+    if (mode === '2') {
+        privateKey = await askQuestion("请输入您的钱包私钥: ");
+    }
     for (let i = 0; i < numberOfWallets; i++) {
         const proxy = proxies[i % proxies.length] || null;
         try {
-            log.info(`Create and Registering Wallets: ${i + 1}/${numberOfWallets} Using Proxy:`, proxy);
-            const walletDetails = createNewWallet();
+            log.info(`正在创建并注册钱包: ${i + 1}/${numberOfWallets} 使用代理:`, proxy);
+            const walletDetails = await handleWalletCreation(privateKey);
+            if (!walletDetails) continue;
+            
             const socket = new LayerEdge(proxy, walletDetails.privateKey, refCode);
             await socket.checkInvite()
             const isRegistered = await socket.registerWallet();
             if (isRegistered) {
-                saveWalletToFile(walletDetails);
+                await WalletManager.saveWallet(walletDetails);
             }
 
             await new Promise(resolve => setTimeout(resolve, 1000));
         } catch (error) {
-            log.error('Error creating wallet:', error.message);
+            log.error('创建钱包时出错:', error.message);
         }
     }
 }

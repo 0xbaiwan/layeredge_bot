@@ -14,7 +14,7 @@ async function readWallets() {
         return JSON.parse(data);
     } catch (err) {
         if (err.code === 'ENOENT') {
-            log.info("No wallets found in wallets.json");
+            log.info("未在wallets.json中找到钱包信息");
             return [];
         }
         throw err;
@@ -27,13 +27,13 @@ async function run() {
 
     const proxies = await readFile('proxy.txt');
     let wallets = await readWallets();
-    if (proxies.length === 0) log.warn("No proxies found in proxy.txt - running without proxies");
+    if (proxies.length === 0) log.warn("在proxy.txt中未找到代理 - 将不使用代理运行");
     if (wallets.length === 0) {
-        log.info('No Wallets found, creating new Wallets first "npm run autoref"');
+        log.info('未找到钱包，请先运行 "npm run autoref" 创建新钱包');
         return;
     }
 
-    log.info('Starting run Program with all Wallets:', wallets.length);
+    log.info('开始运行程序，使用所有钱包:', wallets.length);
 
     while (true) {
         for (let i = 0; i < wallets.length; i++) {
@@ -42,24 +42,24 @@ async function run() {
             const { address, privateKey } = wallet
             try {
                 const socket = new LayerEdge(proxy, privateKey);
-                log.info(`Processing Wallet Address: ${address} with proxy:`, proxy);
-                log.info(`Checking Node Status for: ${address}`);
+                log.info(`正在处理钱包地址: ${address} 使用代理:`, proxy);
+                log.info(`正在检查节点状态: ${address}`);
                 const isRunning = await socket.checkNodeStatus();
 
                 if (isRunning) {
-                    log.info(`Wallet ${address} is running - trying to claim node points...`);
+                    log.info(`钱包 ${address} 正在运行 - 尝试领取节点积分...`);
                     await socket.stopNode();
                 }
-                log.info(`Trying to reconnect node for Wallet: ${address}`);
+                log.info(`尝试重新连接节点，钱包: ${address}`);
                 await socket.connectNode();
 
-                log.info(`Checking Node Points for Wallet: ${address}`);
+                log.info(`检查节点积分，钱包: ${address}`);
                 await socket.checkNodePoints();
             } catch (error) {
-                log.error(`Error Processing wallet:`, error.message);
+                log.error(`处理钱包时出错:`, error.message);
             }
         }
-        log.warn(`All Wallets have been processed, waiting 1 hours before next run...`);
+        log.warn(`所有钱包已处理完毕，等待1小时后重新运行...`);
         await delay(60 * 60);
     }
 }
