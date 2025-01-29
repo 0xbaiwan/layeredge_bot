@@ -68,17 +68,55 @@ class LayerEdgeConnection {
             invite_code: this.refCode,
         };
 
-        const response = await this.makeRequest(
-            "post",
-            "https://referralapi.layeredge.io/api/referral/verify-referral-code",
-            { data: inviteData }
-        );
+        try {
+            const response = await this.makeRequest(
+                "post",
+                "https://referralapi.layeredge.io/api/referral/verify-referral-code",
+                { data: inviteData },
+                30
+            );
 
-        if (response && response.data && response.data.data.valid === true) {
-            log.info("邀请码有效", response.data);
-            return true;
-        } else {
-            log.error("检查邀请码失败",);
+            if (!response) {
+                log.error("检查邀请码失败: 网络请求失败，请稍后重试");
+                return false;
+            }
+
+            if (response === 404) {
+                log.error("检查邀请码失败: API接口暂时不可用，请稍后再试");
+                return false;
+            }
+
+            // 输出完整的响应内容以便调试
+            log.info("服务器响应:", JSON.stringify(response.data, null, 2));
+
+            // 更灵活地处理响应格式
+            const responseData = response.data;
+            if (typeof responseData === 'object') {
+                // 尝试从不同的可能的响应结构中获取验证结果
+                const result = responseData.data || responseData;
+                const valid = result.valid || result.success || result.status === 'success';
+                const message = responseData.message || result.message || result.msg || '';
+
+                if (valid) {
+                    log.success("邀请码验证成功");
+                    return true;
+                } else {
+                    // 处理特定的错误情况
+                    if (message.toLowerCase().includes('referral limit exceeded')) {
+                        log.error('该邀请码已达到使用上限，请使用其他邀请码');
+                    } else {
+                        const errorMsg = message || '请确认邀请码是否正确';
+                        log.error(`邀请码验证失败: ${errorMsg}`);
+                    }
+                    return false;
+                }
+            } else {
+                log.error("检查邀请码失败: 响应格式异常", responseData);
+                return false;
+            }
+        } catch (error) {
+            const errorMessage = error.response?.data?.message || error.message;
+            log.error(`检查邀请码时发生错误: ${errorMessage}`);
             return false;
         }
     }

@@ -20,28 +20,20 @@ async function showMenu() {
     console.clear();
     log.info(banner);
 
-    // 获取钱包和节点状态信息
-    const wallets = await readWallets();
-    const walletCount = wallets.length;
-    let runningNodes = 0;
-    let totalPoints = 0;
+    try {
+        // 获取钱包信息
+        const wallets = await readWallets();
+        const walletCount = wallets.length;
+        
+        // 显示基本状态信息
+        log.success('系统状态', {
+            '已注册钱包': walletCount
+        });
 
-    if (walletCount > 0) {
-        for (const wallet of wallets) {
-            const socket = new LayerEdge(null, wallet.privateKey);
-            const isRunning = await socket.checkNodeStatus();
-            if (isRunning) runningNodes++;
-            const points = await socket.checkNodePoints();
-            if (points) totalPoints += points;
-        }
+        // 不再自动检查节点状态，仅显示钱包数量信息
+    } catch (error) {
+        log.error('读取钱包信息失败:', error.message);
     }
-
-    // 显示状态信息
-    log.success('系统状态', {
-        '已注册钱包': walletCount,
-        '运行中节点': runningNodes,
-        '总积分': totalPoints
-    });
 
     console.log('\n请选择操作：');
     console.log('1. 创建新钱包');
@@ -60,19 +52,56 @@ async function showMenu() {
 // 创建新钱包
 async function createNewWallet() {
     const rl = createInterface();
-    const refCode = await new Promise(resolve => {
-        rl.question('请输入推荐码: ', resolve);
+    const walletCount = await new Promise(resolve => {
+        rl.question('请输入需要创建的钱包数量：', resolve);
     });
     rl.close();
 
-    const walletDetails = WalletManager.createNewWallet();
-    log.info('已创建新钱包，地址:', walletDetails.address);
-
-    const socket = new LayerEdge(null, walletDetails.privateKey, refCode);
-    if (await socket.checkInvite()) {
-        await WalletManager.saveWallet(walletDetails);
-        log.info('钱包创建成功并已保存');
+    const count = parseInt(walletCount) || 1;
+    if (count <= 0) {
+        log.error('钱包数量必须大于0');
+        return;
     }
+
+    log.info(`开始创建 ${count} 个钱包...`);
+    const createdWallets = [];
+    
+    for(let i = 0; i < count; i++) {
+        const progress = Math.round(((i + 1) / count) * 100);
+        const progressBar = '='.repeat(Math.floor(progress / 2)) + '>' + ' '.repeat(50 - Math.floor(progress / 2));
+        
+        try {
+            const walletDetails = WalletManager.createNewWallet();
+            log.info(`[${progress}%] [${progressBar}] 创建钱包 ${i + 1}/${count}`);
+            log.info('钱包信息：', {
+                '地址': walletDetails.address,
+                '私钥': walletDetails.privateKey,
+                '助记词': walletDetails.mnemonic
+            });
+
+            const saved = await WalletManager.saveWallet(walletDetails);
+            if (saved) {
+                createdWallets.push(walletDetails);
+                log.success(`[${progress}%] [${progressBar}] 钱包 ${i + 1} 已保存`);
+            }
+        } catch (error) {
+            log.error(`创建钱包 ${i + 1} 失败:`, error.message);
+        }
+    }
+
+    log.success('钱包创建完成！', {
+        '创建成功': `${createdWallets.length}/${count}`,
+        '创建失败': `${count - createdWallets.length}/${count}`
+    });
+
+    // 等待用户按任意键继续
+    const rl2 = createInterface();
+    await new Promise(resolve => {
+        rl2.question('按回车键返回主菜单...', resolve);
+    });
+    rl2.close();
+
+    return createdWallets;
 }
 
 // 注册账号
@@ -83,10 +112,73 @@ async function registerAccount() {
         return;
     }
 
-    for (const wallet of wallets) {
-        const socket = new LayerEdge(null, wallet.privateKey);
-        await socket.registerWallet();
+    let refCode;
+    let isValidCode = false;
+    while (!isValidCode) {
+        while (!refCode) {
+            const rl = createInterface();
+            const input = await new Promise(resolve => {
+                rl.question('请输入邀请码 (直接回车使用默认值 Ppj9vbrl): ', resolve);
+            });
+            rl.close();
+
+            refCode = input || 'Ppj9vbrl';
+            if (!refCode) {
+                log.error('邀请码不能为空，请重新输入');
+            }
+        }
+
+        // 验证邀请码
+        const testSocket = new LayerEdge(null, wallets[0].privateKey, refCode);
+        log.info(`正在验证邀请码: ${refCode}...`);
+        const isValid = await testSocket.checkInvite();
+        if (!isValid) {
+            log.error('邀请码验证失败，请重新输入有效的邀请码');
+            refCode = null; // 重置邀请码，让用户重新输入
+            continue;
+        }
+        isValidCode = true;
     }
+
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (let i = 0; i < wallets.length; i++) {
+        const wallet = wallets[i];
+        const progress = Math.round(((i + 1) / wallets.length) * 100);
+        const progressBar = '='.repeat(Math.floor(progress / 2)) + '>' + ' '.repeat(50 - Math.floor(progress / 2));
+
+        try {
+            const socket = new LayerEdge(null, wallet.privateKey, refCode);
+            log.info(`[${progress}%] [${progressBar}] 正在注册钱包: ${wallet.address}`);
+            log.info(`使用邀请码: ${refCode}`);
+
+            const isRegistered = await socket.registerWallet();
+            if (isRegistered) {
+                successCount++;
+                log.success(`[${progress}%] [${progressBar}] 钱包 ${wallet.address} 注册成功`);
+            } else {
+                errorCount++;
+                log.error(`[${progress}%] [${progressBar}] 钱包 ${wallet.address} 注册失败`);
+            }
+        } catch (error) {
+            errorCount++;
+            log.error(`注册钱包出错:`, error.message);
+        }
+    }
+
+    log.success('注册完成！', {
+        '总钱包数': wallets.length,
+        '注册成功': successCount,
+        '注册失败': errorCount
+    });
+
+    // 等待用户按任意键继续
+    const rl2 = createInterface();
+    await new Promise(resolve => {
+        rl2.question('按回车键返回主菜单...', resolve);
+    });
+    rl2.close();
 }
 
 // 运行节点
@@ -158,16 +250,30 @@ async function runNodes() {
 
 // 读取钱包信息
 async function readWallets() {
-    try {
-        await fs.access('wallets.json');
-        const data = await fs.readFile('wallets.json', 'utf-8');
-        return JSON.parse(data);
-    } catch (err) {
-        if (err.code === 'ENOENT') {
-            log.info('未找到钱包信息');
-            return [];
+    return await WalletManager.loadWallets();
+}
+
+// 异步获取节点状态信息
+async function getNodesStatus(wallets) {
+    let runningNodes = 0;
+    let totalPoints = 0;
+
+    for (const wallet of wallets) {
+        try {
+            const socket = new LayerEdge(null, wallet.privateKey);
+            const isRunning = await socket.checkNodeStatus();
+            if (isRunning) runningNodes++;
+            const points = await socket.checkNodePoints();
+            if (points) totalPoints += points;
+
+            // 更新状态信息
+            log.success('节点状态更新', {
+                '运行中节点': runningNodes,
+                '总积分': totalPoints
+            });
+        } catch (error) {
+            log.error(`获取节点 ${wallet.address} 状态失败:`, error.message);
         }
-        throw err;
     }
 }
 
@@ -184,7 +290,7 @@ async function main() {
                 break;
             case '3':
                 await runNodes();
-                return; // 运行节点后退出程序
+                break; // 运行完节点后返回主菜单
             case '4':
                 log.info('感谢使用，再见！');
                 return;
