@@ -1,4 +1,3 @@
-
 import fs from 'fs/promises'
 import readline from 'readline'
 import log from './utils/logger.js'
@@ -7,11 +6,16 @@ import banner from './utils/banner.js';
 import LayerEdge from './utils/socket.js';
 import WalletManager from './utils/wallet.js';
 
-// 创建readline接口
-function createInterface() {
-    return readline.createInterface({
+async function askQuestion(question) {
+    const rl = readline.createInterface({
         input: process.stdin,
-        output: process.stdout
+        output: process.stdout,
+    });
+    return new Promise((resolve) => {
+        rl.question(question, (answer) => {
+            rl.close();
+            resolve(answer);
+        });
     });
 }
 
@@ -21,16 +25,10 @@ async function showMenu() {
     log.info(banner);
 
     try {
-        // 获取钱包信息
-        const wallets = await readWallets();
-        const walletCount = wallets.length;
-        
-        // 显示基本状态信息
+        const wallets = await WalletManager.loadWallets();
         log.success('系统状态', {
-            '已注册钱包': walletCount
+            '已注册钱包': wallets.length
         });
-
-        // 不再自动检查节点状态，仅显示钱包数量信息
     } catch (error) {
         log.error('读取钱包信息失败:', error.message);
     }
@@ -41,17 +39,15 @@ async function showMenu() {
     console.log('3. 运行节点');
     console.log('4. 退出\n');
 
-    const rl = createInterface();
-    const answer = await new Promise(resolve => {
-        rl.question('请输入选项 (1-4): ', resolve);
-    });
-    rl.close();
-    return answer;
+    return await askQuestion('请输入选项 (1-4): ');
 }
 
 // 创建新钱包
 async function createNewWallet() {
-    const rl = createInterface();
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
     const walletCount = await new Promise(resolve => {
         rl.question('请输入需要创建的钱包数量：', resolve);
     });
@@ -95,7 +91,10 @@ async function createNewWallet() {
     });
 
     // 等待用户按任意键继续
-    const rl2 = createInterface();
+    const rl2 = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
     await new Promise(resolve => {
         rl2.question('按回车键返回主菜单...', resolve);
     });
@@ -106,7 +105,7 @@ async function createNewWallet() {
 
 // 注册账号
 async function registerAccount() {
-    const wallets = await readWallets();
+    const wallets = await WalletManager.loadWallets();
     if (wallets.length === 0) {
         log.error('未找到钱包，请先创建钱包');
         return;
@@ -116,12 +115,7 @@ async function registerAccount() {
     let isValidCode = false;
     while (!isValidCode) {
         while (!refCode) {
-            const rl = createInterface();
-            const input = await new Promise(resolve => {
-                rl.question('请输入邀请码 (直接回车使用默认值 Ppj9vbrl): ', resolve);
-            });
-            rl.close();
-
+            const input = await askQuestion('请输入邀请码 (直接回车使用默认值 Ppj9vbrl): ');
             refCode = input || 'Ppj9vbrl';
             if (!refCode) {
                 log.error('邀请码不能为空，请重新输入');
@@ -174,7 +168,10 @@ async function registerAccount() {
     });
 
     // 等待用户按任意键继续
-    const rl2 = createInterface();
+    const rl2 = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
     await new Promise(resolve => {
         rl2.question('按回车键返回主菜单...', resolve);
     });
@@ -184,7 +181,7 @@ async function registerAccount() {
 // 运行节点
 async function runNodes() {
     const proxies = await readFile('proxy.txt');
-    const wallets = await readWallets();
+    const wallets = await WalletManager.loadWallets();
 
     if (wallets.length === 0) {
         log.error('未找到钱包，请先创建钱包并注册账号');
@@ -196,54 +193,70 @@ async function runNodes() {
     }
 
     while (true) {
-        log.info('开始处理所有钱包节点...');
         let totalPoints = 0;
-        let successCount = 0;
-        let errorCount = 0;
+        let totalTasks = 0;
+        let successTasks = 0;
 
         for (let i = 0; i < wallets.length; i++) {
             const wallet = wallets[i];
             const proxy = proxies[i % proxies.length] || null;
             const { address, privateKey } = wallet;
-            const progress = Math.round(((i + 1) / wallets.length) * 100);
-            const progressBar = '='.repeat(Math.floor(progress / 2)) + '>' + ' '.repeat(50 - Math.floor(progress / 2));
-
+            
             try {
                 const socket = new LayerEdge(proxy, privateKey);
-                log.info(`[${progress}%] [${progressBar}] 处理钱包: ${address} 使用代理: ${proxy || '无'}`);
-                
-                const isRunning = await socket.checkNodeStatus();
-                if (isRunning) {
-                    log.info(`[${progress}%] [${progressBar}] 钱包 ${address} 正在运行，尝试领取积分...`);
-                    await socket.stopNode();
+                log.progress(address, 'Processing Started', 'start');
+
+                const tasks = [
+                    { name: 'Daily Check-in', fn: () => socket.dailyCheckIn() },
+                    { name: 'Submit Proof', fn: () => socket.submitProof() },
+                    { name: 'Check Node Status', fn: async () => {
+                        const isRunning = await socket.checkNodeStatus();
+                        if (isRunning) {
+                            await socket.stopNode();
+                        }
+                        return true;
+                    }},
+                    { name: 'Connect Node', fn: () => socket.connectNode() },
+                    { name: 'Claim Light Node Points', fn: () => socket.claimLightNodePoints() },
+                    { name: 'Check Node Points', fn: async () => {
+                        const points = await socket.checkNodePoints();
+                        totalPoints += points;
+                        return true;
+                    }}
+                ];
+
+                for (const task of tasks) {
+                    totalTasks++;
+                    log.progress(address, task.name, 'processing');
+                    const result = await task.fn();
+                    if (result) {
+                        successTasks++;
+                        log.progress(address, task.name, 'success');
+                    } else {
+                        log.progress(address, task.name, 'failed');
+                    }
+                    await delay(2);
                 }
 
-                log.info(`[${progress}%] [${progressBar}] 重新连接节点: ${address}`);
-                await socket.connectNode();
-                const points = await socket.checkNodePoints();
-                if (points) totalPoints += points;
-                successCount++;
-
-                // 显示当前进度和统计信息
-                log.success(`处理进度`, {
-                    '当前进度': `${progress}% [${progressBar}]`,
-                    '已处理钱包': `${i + 1}/${wallets.length}`,
-                    '成功': successCount,
-                    '失败': errorCount,
-                    '当前总积分': totalPoints
-                });
+                log.progress(address, 'All Tasks Complete', 'success');
             } catch (error) {
-                errorCount++;
-                log.error(`处理钱包出错:`, error.message);
+                log.error(`处理钱包失败: ${address}`, '', error);
+                log.progress(address, 'Processing Failed', 'failed');
             }
+            await delay(5);
         }
-        log.warn('所有钱包处理完毕，1小时后重新运行...');
+        
+        // 显示本轮统计信息
         log.success('本轮运行统计', {
             '总钱包数': wallets.length,
-            '成功': successCount,
-            '失败': errorCount,
+            '总任务数': totalTasks,
+            '成功任务': successTasks,
+            '失败任务': totalTasks - successTasks,
+            '成功率': `${((successTasks / totalTasks) * 100).toFixed(2)}%`,
             '总积分': totalPoints
         });
+        
+        log.warn('完成一轮处理，等待1小时后继续...');
         await delay(60 * 60);
     }
 }
@@ -290,15 +303,18 @@ async function main() {
                 break;
             case '3':
                 await runNodes();
-                break; // 运行完节点后返回主菜单
+                break;
             case '4':
                 log.info('感谢使用，再见！');
-                return;
+                process.exit(0);
             default:
                 log.error('无效的选项，请重新选择');
         }
-        await delay(2); // 暂停2秒后显示菜单
+        await delay(2);
     }
 }
 
-main();
+main().catch(error => {
+    log.error('程序发生致命错误', '', error);
+    process.exit(1);
+});

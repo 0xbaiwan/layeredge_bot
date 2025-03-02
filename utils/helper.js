@@ -3,8 +3,8 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import fs from 'fs/promises';
 import log from './logger.js';
 
-export function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms * 1000));
+export function delay(seconds) {
+    return new Promise(resolve => setTimeout(resolve, seconds * 1000));
 }
 
 // Save data to a file
@@ -20,13 +20,15 @@ export async function saveToFile(filename, data) {
 // Read the file
 export async function readFile(pathFile) {
     try {
-        const datas = await fs.readFile(pathFile, 'utf8');
-        return datas.split('\n')
-            .map(data => data.trim())
-            .filter(data => data.length > 0);
+        const data = await fs.readFile(pathFile, 'utf8');
+        return data.split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0);
     } catch (error) {
-        log.error(`Error reading file: ${error.message}`);
-        return [];
+        if (error.code === 'ENOENT') {
+            return [];
+        }
+        throw error;
     }
 }
 

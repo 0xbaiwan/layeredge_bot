@@ -1,63 +1,54 @@
 import axios from "axios";
-import chalk from "chalk";
 import { Wallet } from "ethers";
 import log from "./logger.js";
 import { newAgent } from "./helper.js";
 
 class LayerEdgeConnection {
-    constructor(proxy = null, privateKey = null, refCode = "Ppj9vbrl") {
+    constructor(proxy = null, privateKey = null, refCode = "knYyWnsE") {
         this.refCode = refCode;
         this.proxy = proxy;
-        this.headers = {
-            Accept: "application/json, text/plain, */*",
-            Origin: "https://dashboard.layeredge.io",
-        }
+        this.retryCount = 30;
 
-        this.axiosConfig = {
-            ...(this.proxy && { httpsAgent: newAgent(this.proxy) }),
-            timeout: 60000,
+        this.headers = {
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Origin': 'https://layeredge.io',
+            'Referer': 'https://layeredge.io/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
         };
 
-        this.wallet = privateKey
-            ? new Wallet(privateKey)
-            : Wallet.createRandom();
+        this.axiosConfig = {
+            ...(this.proxy && { httpsAgent: newAgent(proxy) }),
+            timeout: 60000,
+            headers: this.headers,
+            validateStatus: (status) => status < 500
+        };
+
+        this.wallet = privateKey ? new Wallet(privateKey) : Wallet.createRandom();
     }
 
     getWallet() {
         return this.wallet;
     }
 
-    async makeRequest(method, url, config = {}, retries = 30) {
-        for (let i = 0; i < retries; i++) {
+    async makeRequest(method, url, config = {}) {
+        for (let i = 0; i < this.retryCount; i++) {
             try {
-                const headers = { ...this.headers };
-                if (method.toUpperCase() === 'POST') {
-                    headers['Content-Type'] = 'application/json';
-                }
-
                 const response = await axios({
                     method,
                     url,
-                    headers,
                     ...this.axiosConfig,
                     ...config,
+                    headers: { ...this.headers, ...(config.headers || {}) }
                 });
                 return response;
             } catch (error) {
-                if (error?.response?.status === 404 || error?.status === 404) {
-                    log.error(chalk.red(`Layer Edge 连接失败，钱包尚未注册...`));
-                    return 404;
-                } else if (i === retries - 1) {
-                    log.error(`已达到最大重试次数 - 请求失败:`, error.message);
-                    if (this.proxy) {
-                        log.error(`代理失败: ${this.proxy}`, error.message);
-                    }
+                if (i === this.retryCount - 1) {
+                    log.error(`Request failed after ${this.retryCount} retries`, '', error);
                     return null;
                 }
-
-                process.stdout.write(chalk.yellow(`请求失败: ${error.message} => 正在重试... (${i + 1}/${retries})
-`));
-                await new Promise((resolve) => setTimeout(resolve, 2000));
+                log.warn(`Attempt ${i + 1}/${this.retryCount} failed, retrying...`);
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
         return null;
@@ -217,11 +208,106 @@ class LayerEdgeConnection {
             `https://referralapi.layeredge.io/api/referral/wallet-details/${this.wallet.address}`
         );
 
-        if (response && response.data) {
-            log.info(`${this.wallet.address} 总积分:`, response.data.data?.nodePoints || 0);
-            return true;
+        if (response?.data?.data) {
+            const points = response.data.data.nodePoints || 0;
+            log.info(`${this.wallet.address} 总积分:`, points);
+            return points;
         } else {
             log.error("检查总积分失败..");
+            return 0;
+        }
+    }
+
+    async submitProof() {
+        try {
+            const timestamp = new Date().toISOString();
+            const message = `I am submitting a proof for LayerEdge at ${timestamp}`;
+            const signature = await this.wallet.signMessage(message);
+            
+            const proofData = {
+                proof: "GmEdgesss",
+                signature: signature,
+                message: message,
+                address: this.wallet.address
+            };
+
+            const response = await this.makeRequest(
+                "post",
+                "https://dashboard.layeredge.io/api/send-proof",
+                { data: proofData }
+            );
+
+            if (response?.data?.success) {
+                log.success("Proof submitted successfully");
+                return true;
+            }
+            return false;
+        } catch (error) {
+            log.error("Error submitting proof", '', error);
+            return false;
+        }
+    }
+
+    async claimLightNodePoints() {
+        try {
+            const timestamp = Date.now();
+            const message = `I am claiming my light node run task node points for ${this.wallet.address} at ${timestamp}`;
+            const signature = await this.wallet.signMessage(message);
+
+            const response = await this.makeRequest(
+                "post",
+                "https://referralapi.layeredge.io/api/task/node-points",
+                {
+                    data: {
+                        walletAddress: this.wallet.address,
+                        timestamp,
+                        sign: signature
+                    }
+                }
+            );
+
+            if (response?.data?.message === "node points task completed successfully") {
+                log.success("Light node points claimed successfully");
+                return true;
+            }
+            return false;
+        } catch (error) {
+            log.error("Error claiming light node points", '', error);
+            return false;
+        }
+    }
+
+    async dailyCheckIn() {
+        try {
+            const timestamp = Date.now();
+            const message = `I am claiming my daily node point for ${this.wallet.address} at ${timestamp}`;
+            const sign = await this.wallet.signMessage(message);
+            
+            const response = await this.makeRequest(
+                "post",
+                "https://referralapi.layeredge.io/api/light-node/claim-node-points",
+                {
+                    data: {
+                        sign,
+                        timestamp,
+                        walletAddress: this.wallet.address
+                    }
+                }
+            );
+
+            if (response?.data) {
+                if (response.data.statusCode === 405) {
+                    const cooldownMatch = response.data.message.match(/after\s+([^!]+)!/);
+                    const cooldownTime = cooldownMatch ? cooldownMatch[1].trim() : "unknown time";
+                    log.info("Daily Check-in Already Completed", `Come back after ${cooldownTime}`);
+                    return true;
+                }
+                log.success("Daily Check-in Successful", response.data);
+                return true;
+            }
+            return false;
+        } catch (error) {
+            log.error("Daily Check-in Failed", '', error);
             return false;
         }
     }

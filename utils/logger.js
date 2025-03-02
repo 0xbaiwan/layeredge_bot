@@ -1,42 +1,83 @@
 import chalk from 'chalk';
 
 const logger = {
-    log: (level, message, value = '') => {
-        const now = new Date().toLocaleString();
+    verbose: true,
+    
+    _formatTimestamp() {
+        return chalk.gray(`[${new Date().toLocaleTimeString()}]`);
+    },
 
-        const colors = {
-            info: chalk.cyanBright,
-            warn: chalk.yellow,
-            error: chalk.red,
-            success: chalk.blue,
-            debug: chalk.magenta,
+    _getLevelStyle(level) {
+        const styles = {
+            info: chalk.blueBright.bold,
+            warn: chalk.yellowBright.bold,
+            error: chalk.redBright.bold,
+            success: chalk.greenBright.bold,
+            debug: chalk.magentaBright.bold,
+            verbose: chalk.cyan.bold
         };
+        return styles[level] || chalk.white;
+    },
 
-        const color = colors[level] || chalk.white;
-        const levelTag = `[ ${level.toUpperCase()} ]`;
-        const timestamp = `[ ${now} ]`;
-
-        const formattedMessage = `${chalk.cyanBright("[ LayerEdge ]")} ${chalk.grey(timestamp)} ${color(levelTag)} ${message}`;
-
-        let formattedValue = ` ${chalk.green(value)}`;
-        if (level === 'error') {
-            formattedValue = ` ${chalk.red(value)}`;
-        } else if (level === 'warn') {
-            formattedValue = ` ${chalk.yellow(value)}`;
+    _formatError(error) {
+        if (!error) return '';
+        
+        let errorDetails = '';
+        if (error.response) {
+            errorDetails = `
+            Status: ${error.response?.status || 'N/A'}
+            Status Text: ${error.response?.statusText || 'N/A'}
+            URL: ${error.config?.url || 'N/A'}
+            Method: ${error.config?.method?.toUpperCase() || 'N/A'}
+            Response Data: ${JSON.stringify(error.response?.data || {}, null, 2)}`;
         }
-        if (typeof value === 'object') {
-            const valueColor = level === 'error' ? chalk.red : chalk.green;
-            formattedValue = ` ${valueColor(JSON.stringify(value))}`;
+        return `${error.message}${errorDetails}`;
+    },
+
+    log(level, message, value = '', error = null) {
+        const timestamp = this._formatTimestamp();
+        const levelStyle = this._getLevelStyle(level);
+        const levelTag = levelStyle(`[${level.toUpperCase()}]`);
+        const header = chalk.cyan('◆ LayerEdge Auto Bot');
+
+        let formattedMessage = `${header} ${timestamp} ${levelTag} ${message}`;
+        
+        if (value) {
+            const formattedValue = typeof value === 'object' ? JSON.stringify(value) : value;
+            const valueStyle = level === 'error' ? chalk.red : 
+                             level === 'warn' ? chalk.yellow : 
+                             chalk.green;
+            formattedMessage += ` ${valueStyle(formattedValue)}`;
         }
 
-        console.log(`${formattedMessage}${formattedValue}`);
+        if (error && this.verbose) {
+            formattedMessage += `\n${chalk.red(this._formatError(error))}`;
+        }
+
+        console.log(formattedMessage);
     },
 
     info: (message, value = '') => logger.log('info', message, value),
     warn: (message, value = '') => logger.log('warn', message, value),
-    error: (message, value = '') => logger.log('error', message, value),
+    error: (message, value = '', error = null) => logger.log('error', message, value, error),
     success: (message, value = '') => logger.log('success', message, value),
     debug: (message, value = '') => logger.log('debug', message, value),
+    verbose: (message, value = '') => logger.verbose && logger.log('verbose', message, value),
+
+    progress(wallet, step, status) {
+        const progressStyle = status === 'success' 
+            ? chalk.green('✔') 
+            : status === 'failed' 
+            ? chalk.red('✘') 
+            : chalk.yellow('➤');
+        
+        console.log(
+            chalk.cyan('◆ LayerEdge Auto Bot'),
+            chalk.gray(`[${new Date().toLocaleTimeString()}]`),
+            chalk.blueBright(`[PROGRESS]`),
+            `${progressStyle} ${wallet} - ${step}`
+        );
+    }
 };
 
 export default logger;
